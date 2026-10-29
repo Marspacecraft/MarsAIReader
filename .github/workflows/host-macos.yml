@@ -1,0 +1,78 @@
+# macOS 的 host 门禁：只在手动触发时跑。
+#
+# 为什么不放进 ci.yml 的矩阵（见 ci.yml 顶部与 .github/README.md §2.1）：
+#   - macOS runner 冷启动排队可能很久，而只要矩阵里有一格没跑完，整个 run 就一直是
+#     queued，另外三格的结果在那之前没人看得到；
+#   - 计费权重是 Linux 的 10 倍；
+#   - 它验证的是"tools/ 四个脚本在 BSD 语义下也成立"，属于抽查，不是目标平台
+#     （目标是 ESP32 + Windows/Linux 开发机）。
+#
+# 拆成独立文件而不是给矩阵加"手动才跑"的条件：job 级 if 里 matrix 上下文是否可用
+# 没有把握，不赌这个语义。
+#
+# 什么时候该跑：发版前，或者改动了 tools/ 里与路径、编码、时间、子进程有关的部分之后。
+# 怎么跑：仓库页 → Actions → host gates (macOS, manual) → Run workflow。
+#
+# 跑的仍是同一条命令（python tools/validate.py），不另写步骤：
+# 两边各写一份就会漂移，然后出现"本地过了、CI 挂了"。
+
+name: "host gates (macOS, manual)"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-gates-macos:
+    name: macos / apple clang
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: 记录工具链身份
+        run: |
+          python -VV
+          clang --version | head -n 2
+
+      - name: host 门禁
+        run: |
+          set +e
+          python tools/validate.py --cc clang 2>&1 | tee "$RUNNER_TEMP/gate.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$rc" -eq 0 ]; then
+            echo "PASS: 全部 host 门禁通过"
+            exit 0
+          fi
+
+          # 退出码 0/1/2：1 是代码有问题，2 是环境有问题（tools/README.md）。
+          case "$rc" in
+            1) echo "::error title=门禁判定代码违规（退出码 1）::修代码；若日志是 Python traceback，则是脚本自身故障，不是代码问题" ;;
+            2) echo "::error title=门禁无法执行（退出码 2）::修 CI 环境，不要改代码" ;;
+            *) echo "::error title=意外退出码 $rc::tools/validate.py 崩溃或返回了未约定的退出码" ;;
+          esac
+
+          grep -nE '^(FAIL|ERROR)|error\[|error:|错误|违规' "$RUNNER_TEMP/gate.log" \
+            | head -n 10 \
+            | while IFS= read -r line; do
+                echo "::error::$(printf '%s' "$line" | tr -d '\r')"
+              done
+
+          exit 1

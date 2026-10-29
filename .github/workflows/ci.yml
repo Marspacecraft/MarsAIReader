@@ -4,15 +4,21 @@
 # 两边各写一份步骤就会慢慢漂移，然后出现"本地过了、CI 挂了"。
 # 新门禁只加进 tools/validate.py，CI 自动跟上，不需要动本文件。
 #
-# 为什么要三个 OS：tools/ 四个脚本的全部价值就是"一份实现、三家语义一致"
+# 为什么跨 OS：tools/ 四个脚本的全部价值就是"一份实现、多家语义一致"
 # （tools/README.md 里否决 .sh + .ps1 双份实现的就是这个理由）。
 # 只在一个平台跑，这份声明就没有人验证。
+#
+# 为什么这里只有三格：macOS 单独放在 host-macos.yml，只在手动触发时跑。
+#   - 它冷启动排队可能很久，而只要矩阵里有一格没跑完，整个 run 就一直是 queued，
+#     另外三格的结果在那之前没人看得到 —— run #1 就是这么"看起来没启动"的；
+#   - 计费权重是 Linux 的 10 倍，而它验证的 BSD 语义对当前阶段只是抽查。
+#   做法是拆成两个 workflow 文件，而不是给矩阵加"手动才跑"的条件：
+#   job 级 if 里能否用 matrix 上下文没有把握，与其赌语义，不如不让它进矩阵。
 #
 # 为什么 Windows 上只有 clang：
 #   - windows-latest 预装 LLVM clang（C:\Program Files\LLVM\bin）；
 #   - msys2 的 gcc 不是预装的，要另加一步安装；
 #   - MSVC 的 cl 不接受 -std=c11 / -Wextra / -fsyntax-only 这套参数，本项目门禁不支持它。
-#   - macOS 上的 gcc 是 clang 的别名，跑它等于把同一件事记两遍，所以不跑。
 #   要补 Windows gcc：加一步 msys2/setup-msys2，再把 cc 指到 ucrt64/bin/gcc.exe。
 
 name: host gates
@@ -49,9 +55,6 @@ jobs:
             cc: gcc
           - name: linux / clang
             os: ubuntu-latest
-            cc: clang
-          - name: macos / apple clang
-            os: macos-latest
             cc: clang
           - name: windows / llvm clang
             os: windows-latest

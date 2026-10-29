@@ -2,7 +2,10 @@
 
 > 回答一个问题：**提交之后，谁来把门禁跑一遍，跑在哪些平台上。**
 
-工作流：[`workflows/ci.yml`](workflows/ci.yml)。
+工作流：
+
+- [`workflows/ci.yml`](workflows/ci.yml) —— 默认，push / PR 触发，三格（linux gcc、linux clang、windows clang）。
+- [`workflows/host-macos.yml`](workflows/host-macos.yml) —— macOS 一格，**只在手动触发时跑**，理由见 §2.1。
 
 ---
 
@@ -18,14 +21,39 @@ python tools/validate.py --cc <编译器>
 
 **加一条门禁 = 往 `tools/validate.py` 的 `STEPS` 里加一行，CI 自动跟上。** 任何在 workflow 里重新列出脚本名/参数的做法都是第二份清单，会腐烂。
 
-## 2. 矩阵：为什么是这四格
+## 2. 矩阵：跑哪几格、什么时候跑
 
-| 格 | 理由 |
-|---|---|
-| `linux / gcc` | ubuntu runner 预装；也是 ESP-IDF 目标编译器所属的家族，最接近真实固件的行为 |
-| `linux / clang` | 预装；与 gcc 的 `-Werror` 判定并不总一致，一致性必须被看见 |
-| `macos / apple clang` | 预装；`-ffoo` 解析、`sizeof` 警告、`#include` 大小写敏感度与 Linux 不同 |
-| `windows / llvm clang` | 预装于 `C:\Program Files\LLVM\bin`；也是本仓库开发机上实际用的编译器 |
+| 格 | 何时跑 | 理由 |
+|---|---|---|
+| `linux / gcc` | 每次 | ubuntu runner 预装；也是 ESP-IDF 目标编译器所属的家族，最接近真实固件的行为 |
+| `linux / clang` | 每次 | 预装；与 gcc 的 `-Werror` 判定并不总一致，一致性必须被看见 |
+| `windows / llvm clang` | 每次 | 预装于 `C:\Program Files\LLVM\bin`；也是本仓库开发机上实际用的编译器 |
+| `macos / apple clang` | **仅手动** | `-ffoo` 解析、`sizeof` 警告、`#include` 大小写敏感度与 Linux 不同。但它是 BSD 语义的**抽查**，不是目标平台（目标是 ESP32 + Windows/Linux 开发机） |
+
+### 2.1 为什么 macOS 移出默认矩阵，而且是另开一个 workflow 文件
+
+2026-10-29 第一次真实运行（run #1）：`windows` 25 秒通过，两格 Linux 各自失败，
+而 `macos / apple clang` 排队 7 分钟仍没被 runner 接单。**只要矩阵里有一格没跑完，
+整个 run 的状态就是 `queued`** —— 另外三格的结果在那之前没人看得到，界面看起来像
+"CI 没启动"。
+
+代价与收益不对等：macOS 计费权重是 Linux 的 10 倍，冷启动排队不可控，而它验证的
+"BSD 环境下的脚本语义"对当前阶段价值有限。
+
+做法是**拆成独立文件** [`workflows/host-macos.yml`](workflows/host-macos.yml)
+（只 `workflow_dispatch`），而不是给矩阵加一个"`manual_only` 才跑"的 job 级条件。
+原因是：job 级 `if` 能否读 `matrix` 上下文没有把握——赌错的表现是**静默全跑**或
+**静默全不跑**，比多一个文件糟糕得多。拆文件的代价只是重复十几行 step，而两边的
+真正内容都只有一句 `python tools/validate.py`。
+
+**代价要认**：不再有周期性验证，macOS 格会随环境漂移而静默失效。发版前手动跑一次：
+
+```
+仓库页 → Actions → host gates (macOS, manual) → Run workflow
+```
+
+如果将来 `tools/` 开始依赖 GNU coreutils 之外的细节，或者真的要支持 macOS 开发机，
+就应该把它挪回 `ci.yml` 的矩阵，而不是继续靠"记得手动跑"。
 
 不上的格子及原因：
 
