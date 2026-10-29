@@ -7,4 +7,5 @@ idf_component_register(
     SRCS
         "src/cm_err.c"
         "src/cm_crc.c"
+        "src/cm_tls.c"
 )

@@ -17,6 +17,7 @@
 #include "cm_err.h"
 #include "cm_list.h"
 #include "cm_ring.h"
+#include "cm_tls.h"
 #include "cm_types.h"
 
 #include "tinytest.h"
@@ -289,10 +290,35 @@ static void crc_vectors(void)
     TT_CHECK_EQ_U32(cm_crc32(0u, "hello", 5), 0x3610A686u);
 }
 
+/* ---------------- 任务局部变量 ---------------- */
+
+/* 只验同线程语义与越界安全。跨线程互不可见要靠平台任务，
+ * 在 test_manager 里由 App 的两次启动间接覆盖。 */
+static void tls_slots(void)
+{
+    int a = 1, b = 2;
+
+    TT_CHECK(cm_tls_get(0) == NULL);
+    cm_tls_set(0, &a);
+    cm_tls_set(1, &b);
+    TT_CHECK(cm_tls_get(0) == &a);
+    TT_CHECK(cm_tls_get(1) == &b);
+
+    cm_tls_set(0, NULL);              /* 清空 */
+    TT_CHECK(cm_tls_get(0) == NULL);
+    TT_CHECK(cm_tls_get(1) == &b);    /* 槽位互不影响 */
+
+    /* 越界是调用方 bug：忽略写、读回 NULL，不崩 */
+    cm_tls_set(CM_TLS_SLOT_MAX, &a);
+    TT_CHECK(cm_tls_get(CM_TLS_SLOT_MAX) == NULL);
+    cm_tls_set(CM_TLS_SLOT_MAX + 99u, &a);
+    TT_CHECK(cm_tls_get(CM_TLS_SLOT_MAX + 99u) == NULL);
+}
+
 static const tt_case_t s_cases[] = {
-    TT_CASE(types_macros), TT_CASE(err_codes), TT_CASE(list_ops),
+    TT_CASE(types_macros), TT_CASE(err_codes),  TT_CASE(list_ops),
     TT_CASE(ring_ops),     TT_CASE(atomic_ops), TT_CASE(bits_ops),
-    TT_CASE(crc_vectors),
+    TT_CASE(crc_vectors),  TT_CASE(tls_slots),
 };
 
 TT_MAIN(s_cases)

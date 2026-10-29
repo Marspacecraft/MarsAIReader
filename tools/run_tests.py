@@ -27,15 +27,8 @@ SYS_DIR = hostenv.ROOT / "tests" / "sys"
 
 # 测试是白盒的：能看到所有层的头。被测代码自己受门禁约束（见 check_purity.py），
 # 测试文件不受限——它本来就要能看见 framework/ 的控制面。
-INCLUDE_DIRS = [
-    "common/include",
-    "api/include",
-    "framework/include",
-    "platform/port",
-    "apps",
-    "apps/_system",
-    "tests/sys",
-]
+# 路径定义在 hostenv 里，四个脚本共用一份；否则"门禁检查的集合"与"真正编译的集合"会漂移。
+INCLUDE_DIRS = hostenv.INCLUDE_DIRS
 
 # 所有实现文件一起编：这不是最优做法（改一行会重编很多），但它是"零配置"——
 # 不需要维护源文件列表，加一个 .c 就自动进入构建。对这么大的项目，值。
@@ -43,8 +36,6 @@ _IMPL_GLOBS = [
     "common/src/*.c",
     "framework/src/*.c",
     "platform/host-fake/*.c",
-    "apps/*.c",
-    "apps/**/*.c",
 ]
 
 

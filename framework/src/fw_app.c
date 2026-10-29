@@ -51,9 +51,9 @@ static int hard_required_ok(const plat_ops_t *p)
            p->task_create != NULL && p->task_exit_current != NULL;
 }
 
-cm_err_t fw_init(const app_desc_t *const *manifest, uint32_t count)
+cm_err_t fw_init(const fw_manifest_t *manifests, uint32_t count)
 {
-    if (manifest == NULL || count == 0u || count > FW_APP_MAX) {
+    if (manifests == NULL || count == 0u) {
         return CM_ERR_INVALID;
     }
     if (!hard_required_ok(plat_get_ops())) {
@@ -62,24 +62,50 @@ cm_err_t fw_init(const app_desc_t *const *manifest, uint32_t count)
     }
 
     s_plat = plat_get_ops();
-    s_count = count;
+    s_count = 0u;
 
-    for (uint32_t i = 0; i < count; i++) {
-        const app_desc_t *d = manifest[i];
-        if (d == NULL || d->id == NULL || d->task == NULL) {
-            return CM_ERR_INVALID;
+    for (uint32_t m = 0; m < count; m++) {
+        const app_desc_t *const *list = manifests[m].apps;
+        uint32_t n = manifests[m].count;
+
+        /* 空清单是合法的（比如还没有任何普通 App），跳过而不是报错。 */
+        if (list == NULL || n == 0u) {
+            continue;
         }
-        memset(&s_apps[i], 0, sizeof(s_apps[i]));
-        s_apps[i].ctx.desc = d;
-        cm_atomic_u32_init(&s_apps[i].ctx.cancel, 0u);
-        cm_atomic_u32_init(&s_apps[i].ctx.state, (uint32_t)APP_STATE_EMPTY);
+
+        for (uint32_t i = 0; i < n; i++) {
+            if (s_count >= FW_APP_MAX) {
+                return CM_ERR_INVALID;
+            }
+            const app_desc_t *d = list[i];
+            if (d == NULL || d->id == APP_ID_NONE || d->name == NULL || d->task == NULL) {
+                return CM_ERR_INVALID;
+            }
+            /* id 唯一在这里检查：重复的 id 会让 fw_app_find 的结果取决于注册顺序，
+             * 那是最难查的一类 bug（表现是"有时启动的是另一个 App"）。
+             * 多个清单合并之后，跨清单重复也能被抓到。 */
+            for (uint32_t j = 0; j < s_count; j++) {
+                if (s_apps[j].ctx.desc->id == d->id) {
+                    return CM_ERR_INVALID;
+                }
+            }
+            memset(&s_apps[s_count], 0, sizeof(s_apps[s_count]));
+            s_apps[s_count].ctx.desc = d;
+            cm_atomic_u32_init(&s_apps[s_count].ctx.cancel, 0u);
+            cm_atomic_u32_init(&s_apps[s_count].ctx.state, (uint32_t)APP_STATE_EMPTY);
+            s_count++;
+        }
+    }
+
+    if (s_count == 0u) {
+        return CM_ERR_INVALID;
     }
     return CM_OK;
 }
 
-cm_err_t fw_boot(const app_desc_t *const *manifest, uint32_t count)
+cm_err_t fw_boot(const fw_manifest_t *manifests, uint32_t count)
 {
-    cm_err_t r = fw_init(manifest, count);
+    cm_err_t r = fw_init(manifests, count);
     if (r != CM_OK) {
         return r;
     }
@@ -108,13 +134,13 @@ fw_app_t *fw_app_at(uint32_t index)
     return index < s_count ? &s_apps[index] : NULL;
 }
 
-fw_app_t *fw_app_find(const char *id)
+fw_app_t *fw_app_find(app_id_t id)
 {
-    if (id == NULL) {
+    if (id == APP_ID_NONE) {
         return NULL;
     }
     for (uint32_t i = 0; i < s_count; i++) {
-        if (strcmp(s_apps[i].ctx.desc->id, id) == 0) {
+        if (s_apps[i].ctx.desc->id == id) {
             return &s_apps[i];
         }
     }
@@ -198,9 +224,9 @@ void fw_ctx_finish(app_ctx_t *ctx, app_state_t final_state)
  * api/app.h 的实现
  * ------------------------------------------------------------------------- */
 
-const char *app_id(const app_ctx_t *ctx)
+app_id_t app_id(const app_ctx_t *ctx)
 {
-    return (ctx != NULL && ctx->desc != NULL) ? ctx->desc->id : "?";
+    return (ctx != NULL && ctx->desc != NULL) ? ctx->desc->id : APP_ID_NONE;
 }
 
 app_state_t app_state(const app_ctx_t *ctx)
@@ -247,7 +273,7 @@ void app_run_exit(void)
         /* 非 App 任务。没有可退出的 App，直接返回（不崩，但这是设计错误）。 */
         return;
     }
-    app_logp(c->desc->id, "收到停止请求，退出");
+    app_logp(c->desc->name, "收到停止请求，退出");
     fw_ctx_finish(c, APP_STATE_STOPPED);
 }
 

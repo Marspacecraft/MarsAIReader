@@ -16,6 +16,19 @@ ROOT = Path(__file__).resolve().parent.parent
 
 BUILD_DIR = ROOT / "build" / "host"
 
+# 编译任何一个编译单元都用同一份 include 路径。
+# 为什么集中在这里：如果门禁用的路径与真实构建的路径不一致，被检查的文件集合
+# 就会与真正参与构建的文件集合不同——这种偏差不报错，只是让门禁慢慢失去意义。
+# 本仓库不含 `apps/`（应用实现由产品仓库提供），所以这里没有应用层的 -I。
+INCLUDE_DIRS = [
+    "common/include",
+    "api/include",
+    "api/include/sys",
+    "framework/include",
+    "platform/port",
+    "tests/sys",
+]
+
 # 与 CMakeLists / 交叉编译保持一致的 C 标准与警告档位。
 # -Werror 是有意的：这些警告在嵌入式里几乎全是真 bug（隐式转换丢精度、未初始化、
 # 声明了没定义）。

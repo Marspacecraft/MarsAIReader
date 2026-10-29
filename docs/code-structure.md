@@ -1,4 +1,4 @@
-# 代码结构（v0.3）
+# 代码结构（v0.6）
 
 > 目的：先定"哪里放什么"，再定接口细节。
 > 相关：[architecture.md](architecture.md) 三层与解耦规则、[platform-port.md](platform-port.md) 平台契约
@@ -17,19 +17,16 @@ MarsAIReader/
 │   ├─ code-structure.md     本文件
 │   └─ generated/            生成物（能力目录、依赖图），入库但由工具产出
 ├─ common/                   公共基础库 —— 任何层可 include，自身不依赖项目内任何头
-│   ├─ include/              cm_port / cm_types / cm_err / cm_atomic / cm_list / cm_ring / cm_bits / cm_crc
+│   ├─ include/              cm_port / cm_types / cm_err / cm_atomic / cm_list / cm_ring / cm_bits / cm_crc / cm_tls
 │   └─ src/                  少数需要 .c 的实现（字符串表、CRC）
 ├─ api/                      应用层契约 —— 只有声明，没有实现
-│   └─ include/              api.h（总入口）/ app.h / log.h
+│   └─ include/              api.h（总入口）/ app.h（App 面）/ log.h
+│       └─ sys/              app_sys.h（机制面：状态、取消、退出；只给系统 App）
 ├─ framework/                框架层 —— 机制，不含业务
 │   ├─ include/              控制面：fw_app.h（能启动/停止别人）
 │   └─ src/                  fw_app.c（生命周期）/ fw_task.c（任务与 TLS）/ fw_log.c / fw_internal.h
 ├─ lib/                      应用层公共纯逻辑 —— 无硬件依赖，可 host 测
-├─ apps/                     应用层实现
-│   ├─ app_manifest.c/.h     唯一的 App 注册点
-│   ├─ _system/              0/1/2 号系统 App + 服务宿主
-│   │   └─ manager/          0 号：启动其他 App、观测状态变化
-│   └─ demo/hello/           示例 App —— 给 AI 照抄的最小骨架
+│                            （本仓库不含 apps/：应用实现由产品仓库提供）
 ├─ platform/                 平台层
 │   ├─ port/                 平台契约头（plat_ops.h）
 │   ├─ drivers/              公共器件驱动（多平台共用）
@@ -49,10 +46,11 @@ MarsAIReader/
 
 | 状态 | 内容 |
 |---|---|
-| 已实现并跑通 host 测试 | `common/`、`api/`（app + log）、`framework/`（生命周期 + 任务 + 日志）、`apps/`（0 号 + hello）、`platform/port/`、`platform/host-fake/`、`tools/`、`tests/sys/` |
+| 已实现并跑通 host 测试 | `common/`（含 `cm_tls`）、`api/`（app + log + sys）、`framework/`（生命周期 + 任务 + 日志）、`platform/port/`、`platform/host-fake/`、`tools/`、`tests/sys/` |
 | 目录已建、内容待填 | `lib/`、`skills/`、`docs/generated/` |
 | 还没建 | `platform/drivers/`、`platform/boards/`、`platform/template/` |
 | 接口未定 | display / input / audio / stor / net / power / res / cap（见 architecture.md §9、§10） |
+| 不在本仓库 | `apps/` —— 所有 App 实现与 App 清单由产品仓库提供（用户 m01960/m01994） |
 
 ---
 
@@ -64,8 +62,8 @@ MarsAIReader/
 | `api/` | 标准 C、`common/`、`api/` | framework / platform / apps / lib |
 | `lib/` | `api/`、`common/`、`lib/`、标准 C | framework / platform / apps |
 | `framework/` | `api/`、`common/`、`framework/`、`platform/port/` | `apps/`、`platform/` 的实现 |
-| `apps/`（AI 写） | `api/`、`lib/`、`common/`、自己 | framework / platform / 别的 app |
-| `apps/_system/`（系统） | 上面 + `framework/include/fw_*.h` | 别的 app 的内部头 |
+| `apps/`（AI 写，**产品仓库**） | `api/`（不含 `sys/`）、`lib/`、`common/`、自己 | framework / platform / 别的 app |
+| `apps/system/`（**产品仓库**） | 上面 + `framework/include/fw_*.h` + `api/include/sys/` | 别的 app 的内部头 |
 | `platform/` | `platform/port/`、`common/`、平台自有 SDK | api / framework / apps / lib |
 | `tests/` | 全部（白盒） | — |
 
@@ -91,6 +89,7 @@ MarsAIReader/
 | `cm_ring.h` | 单生产者单消费者无锁字节环 | ISR→任务、DMA→任务、AT 响应流全靠它，是最容易写出竞态的地方 |
 | `cm_bits.h` | popcount/clz/ctz/next_pow2/位图 | 1bpp 帧缓冲和位图分配反复用到，手写是 off-by-one 高发区 |
 | `cm_crc.h` | CRC-16/CCITT-FALSE、CRC-32/ISO-HDLC（增量式） | 书库文件、字体包、NVS 记录、AT 帧都需要，算法口径必须统一 |
+| `cm_tls.h` | 任务局部变量（8 个槽，C11 `_Thread_local`，弱符号） | 伪阻塞要求"任意深度的阻塞点都知道自己在哪个 App 里"；透传 ctx 会让每个签名多一个参数且容易漏 |
 
 `common/` 的四条禁令：
 
@@ -109,7 +108,7 @@ MarsAIReader/
 
 ### 2.2 纯 C 边界 —— 五个目录不认识目标 SDK
 
-`common/` `api/` `lib/` `framework/` `apps/` 这五个目录**只能是标准 C11**：
+`common/` `api/` `lib/` `framework/` 这四个目录**只能是标准 C11**（产品仓库的 `apps/` 同样受此约束，门禁 `check_purity.py` 会把它们一起扫）：
 
 - 不 include 任何目标 SDK / RTOS / 图形库头文件；
 - 不出现它们的标识符（任务创建、延时、日志、中断属性等）；
@@ -162,7 +161,7 @@ api/
 
 同一个能力会有两个头，分属两侧，**不能互相替代**：
 
-| 能力 | `api/`（使用面，App 可见） | `framework/include/`（控制面，仅 `_system/` 可见） |
+| 能力 | `api/`（使用面，App 可见） | `framework/include/`（控制面，仅系统 App 可见） |
 |---|---|---|
 | App | `app_delay`、`ctx`、`on_exit` | `fw_app_register`、`fw_app_stop`、取消位置位 |
 | 资源 | `res_track`、`res_acquire` | `fw_res_set_quota`、`fw_res_revoke`、用量查询 |
@@ -184,7 +183,7 @@ AI 写的 App 只拿到左列。右列能停别人的任务、改别人的配额
 | 类别 | 例子 | 实现位置 | 原因 |
 |---|---|---|---|
 | **机制型** | `stor_open`、`res_acquire`、`app_delay`、`cap_available` | `framework/src/` | 需要在阻塞点检查取消位、需要记账 |
-| **服务型** | `disp_commit`、`audio_play`、`input_poll` | `apps/_system/*` + 注册表 | 有独占硬件、有长时序状态、需要活对象 |
+| **服务型** | `disp_commit`、`audio_play`、`input_poll` | 服务 App（**产品仓库**的 `apps/display/` 等）+ 注册表 | 有独占硬件、有长时序状态、需要活对象 |
 
 服务型的调用链：
 
@@ -243,7 +242,7 @@ disp_err_t disp_commit(const page_t *page) {
 
 ```
 framework/
-├─ include/           fw_*.h：控制面，只给 _system/ 用
+├─ include/           fw_*.h：控制面，只给系统 App 用（产品仓库的 apps/system/）
 │   ├─ fw_app.h       App 注册、生命周期、取消位、退出路径
 │   ├─ fw_svc.h       服务注册表
 │   ├─ fw_res.h       记账与限额（对应 res_track / res_acquire）
@@ -287,30 +286,57 @@ lib/
 
 ---
 
-## 7. `apps/`
+## 7. `apps/` —— 不在本仓库
+
+`apps/` 目录**在这个仓库里不存在**，也不应该存在（用户 m01960/m01994：删除 app 实现
+的所有内容）。
+
+它是产品仓库的结构，本仓库只约定形状：
 
 ```
-apps/
-├─ _system/
-│   ├─ manager/     0 号：引导、依赖排序、配额预检、监控、停止
-│   ├─ display/     显示服务：唯一持有面板句柄 + 刷新计划（屏幕专项另议）
-│   ├─ input/       输入服务：按键 / 触摸 / 手势
-│   ├─ audio/       音频服务：跨 I2S/UART/GPIO 的会话状态机
-│   └─ net/         网络服务：连接、重连、背压
-└─ reader/          AI 可写的第一个 App（同时是样板）
+apps/                        ← 产品仓库
+├─ app_manifest.c            业务 App 的清单（AI 在这里追加一行）
+├─ system/                   系统 App —— tag 1 读写，tag 2 只能读
+│  ├─ system_manifest.c      系统 App 的清单（AI 不必碰，也不该碰）
+│  ├─ manager/               0 号：引导、依赖排序、配额预检、监控、停止
+│  ├─ display/               显示服务：唯一持有面板句柄 + 刷新计划（屏幕专项另议）
+│  ├─ input/                 输入服务：按键 / 触摸 / 手势
+│  ├─ audio/                 音频服务：跨 I2S/UART/GPIO 的会话状态机
+│  └─ net/                   网络服务：连接、重连、背压
+└─ demo/                     AI 写的 App —— tag 2，一个 App 一个子目录
+   └─ <app>/                 实现 init / exit / task + 自己的头 + 自己的清单项
 ```
 
-每个 App 目录固定形态：
+**为什么不在本仓库**：框架仓库一旦塞进"示例 App"，示例就会变成事实标准——所有
+产品照着抄，而真正的 0 号策略（优先级、配额、降级）本该各产品自己定。附带代价是
+本仓库失去了生命周期测试覆盖（见 app-model.md §8 的覆盖空洞）。
 
-```
-apps/reader/
-├─ app.yaml       manifest：id、栈、psram、requires、services
-├─ app.c          入口 + 主任务 + on_exit
-├─ ctx.h          本 App 的资源槽位（伪阻塞退出靠它回收）
-└─ ui/            页面（纯布局，调用 lib/layout）
+### 清单的形态
+
+`fw_init` / `fw_boot` 接受**一份清单数组 + 数量**，不是单个全局数组：
+
+```c
+typedef struct {
+    const app_desc_t *const *apps;
+    uint32_t count;
+} fw_manifest_t;
+
+cm_err_t fw_init(const fw_manifest_t *manifests, uint32_t count);
 ```
 
-`_system/` 与普通 App 的差别**只在两处**：能否 include `framework/include`、能否被 `tools/` 的路径门禁排除。**没有第三处**。
+**为什么不是只有一张表**：只有一张时，AI 加自己的 App 就要 `extern` 系统 App 的
+`app_desc_t`——AI 的编译单元引用系统 App 的符号，既越权又脆弱（系统 App 改名/挪目录
+就断）。支持多份清单后，AI 只看得见自己那份，系统 App 那份由别人维护，框架负责合并。
+这条是 `check_policy.py --symbols` 第一次跑就抓出来的，不是设计时想到的
+（见 app-model.md §5、决定 21）。
+
+系统 App 与普通 App 的差别**只在三处**：能否 include `framework/` 与 `api/sys/`、
+能否写 `apps/system/`、它的清单项被谁维护。**没有第四处**。
+
+权限边界由**目录 + `policy.txt`** 表达：`apps/system/` 只给 tag 1 读写，
+`apps/demo/` 只给 tag 2 读写，AI 另可写 `apps/app_manifest.c`（只追加）。
+
+判定细节不在这里写——权威定义是 [access-control.md](access-control.md)。
 
 ---
 
@@ -400,7 +426,7 @@ host 构建必须能覆盖 `framework/` 与 `lib/` 的全部逻辑。覆盖不�
 
 **用例表而不是顺序调用**：每个文件末尾用 `TT_CASE(...)` 声明用例，`tinytest.h` 按命令行参数分派"全部 / 某个用例 / `--list`"。这样"只跑一个用例"是运行器能力，不需要为每个测试写第二份开关代码。`--list` 通过**运行**编译产物获得，不解析源码文本——解析会漂移。
 
-`apps/` 的编译：所有 App 编进同一个 component，由 manifest 在运行时决定启动谁 —— 不做动态加载（架构 §1）。
+`apps/` 的编译（在**产品仓库**里）：所有 App 编进同一个 component，由清单在运行时决定启动谁 —— 不做动态加载（架构 §1）。
 
 ---
 
@@ -409,11 +435,11 @@ host 构建必须能覆盖 `framework/` 与 `lib/` 的全部逻辑。覆盖不�
 | 脚本 | 检查什么 | 现状 |
 |---|---|---|
 | `check_purity.py` | §2.2 纯 C 边界（五个目录不碰目标 SDK），规则在 `tools/purity_rules.txt` | **已实现** |
+| `check_policy.py` | `policy.txt` 的三条判定：依赖（`clang -MM`）/ 符号（`nm -u` + 实际 include 的头）/ 写入（`git diff` 路径前缀）。`--as <tag\|human>` 声明身份 | **已实现** |
 | `check_headers.py` | 每个头文件能单独 include（自包含） | **已实现** |
 | `run_tests.py` | host 单测（`tests/sys/` 逐个编译运行，支持单用例） | **已实现** |
-| `validate.py` | 一次跑完上面三项，不因前一项失败而中断 | **已实现** |
+| `validate.py` | 一次跑完上面四项，不因前一项失败而中断；`--as` 透传给写入判定 | **已实现** |
 | `check_layers.py` | §2 的 include 矩阵（比 purity 更细的分层检查） | 新增 |
-| `check_app_scope.sh` | `git diff --name-only` ⊆ `apps/`（AI 提交） | 新增 |
 | `gen_catalog.py` | 从 `api/` + 服务注册生成能力目录 | 新增 |
 | `check_catalog.py` | 生成物 ↔ 实际注册双向比对，防静默漂移 | 新增 |
 | `check_blocking.py` | 任务体内必须有伪阻塞调用（防死循环） | 后置，先靠看门狗 |
@@ -455,6 +481,15 @@ host 构建必须能覆盖 `framework/` 与 `lib/` 的全部逻辑。覆盖不�
 | 11 | App 的回调集合 | **已定：只有 `init` / `exit` / `task` 三个，没有 create/destroy**。exit 覆盖所有结束路径（含 FAILED、含取消），作者没法只在正常路径清理。见 app-model.md |
 | 12 | 阻塞接口的形态 | **已定：一律伪阻塞，App 不检查返回值**。把"停不下来"收敛到框架一处；代价是资源必须登记（`res_track` 仍未实现） |
 | 13 | 平台如何表达"不支持某能力" | **已定：函数指针为 NULL，不用 stub 函数**。`static inline` stub 在每个 TU 有独立副本，跨 TU 比较函数指针恒不等，能力自检形同虚设；且 stub 制造"看起来实现了"的假象。见 platform-port.md §4.1 |
+| 14 | App 的机器标识用字符串还是整数 | **已定：`cm_u8`（1..254），`name` 保留人读字符串**。id 用于注册表查找、位图、将来的配额；`strcmp` 在每次查找里都是浪费。重复 id 由 `fw_init()` 拒绝启动。日志打 name 不打 id |
+| 15 | App 机制面放哪 | **已定：`api/include/sys/app_sys.h`**（不是 `apps/_system/`）。实现在 `framework/src/`，声明若进应用层目录会让框架反向 include 应用层，依赖方向翻转。可见性靠 include 名单 + 门禁，不靠物理目录 |
+| 16 | 系统 App 的权限边界 | **已定：先提清单（`apps/system_apps.txt`），后由 19 推翻改为目录** | 已被 19 取代 |
+| 17 | 任务局部变量 | **已定：`common/include/cm_tls.h`（C11 `_Thread_local`，8 槽，弱符号可被平台覆盖）**。框架用 0 号槽存 `app_ctx_t*`。放 common 而不是 framework，是因为服务型 App 的实现也要回答"当前是谁在调我" |
+| 18 | 访问权限的表达形式 | **已定：策略表（根目录 `policy.txt`，行格式，角色 × 路径 × r/w）+ 三条判定**，不把规则写死在脚本里。改权限只改数据。格式选行格式而非 TOML/JSON 的理由见 access-control.md §9 |
+| 19 | 系统 App 的边界靠目录还是清单 | **已定：目录（`apps/system/`），推翻决定 16 的清单方案**，`apps/system_apps.txt` 取消。理由：写入判定本来就按路径前缀做，路径前缀天然知道 `apps/system/`；清单是第二份要同步的事实。代价必须显式禁止标记 2 写该目录（白名单天然做到） |
+| 20 | 越权怎么拦 | **已定：三段判定——依赖用 `clang -M` 的真实解析结果、符号用 `nm -u`、写入用 `git diff` 路径前缀**。**已否决**"只扫 `#include` 字面量"：`../` 相对路径、`-I` 顺序、`#include_next`、`__has_include` 都能绕过；**已否决**"只靠 include 白名单"：`extern` 声明即可调用任意符号 |
+| 21 | App 注册表一张还是多份 | **已定：多份清单**（`fw_manifest_t` 数组 + count，`fw_init` 合并进内部注册表）。单一表要求 AI 的注册单元 `extern` 系统 App 的 `app_desc_t`，既是越权也脆弱。**这条是符号判定第一次跑就抓出来的**，不是设计时想到的。产品仓库常见形态是"系统清单一份 + 业务清单一份" |
+| 22 | 符号判定的判据 | **已定："这个未定义符号是否出现在该编译单元实际 include 过的头文件里"**，不是"符号定义在哪个目录"。按定义位置判会把"`api/` 声明、`framework/` 实现"的正常调用全判成违规。副作用：它顺带堵住 `extern` 绕过（因为 `extern` 写的标识符不会出现在任何被 include 的头里） |
 
 ### 12.1 为什么选注册表（裁决记录）
 

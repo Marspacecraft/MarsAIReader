@@ -154,13 +154,16 @@ M1 阶段先不做：能力位要等第一个真实平台落地才有内容，�
 ### 5.1 能力如何传到应用层
 
 ```
-app_main() → 0 号 manager → fw_init()
+产品仓库的 app_main() → 系统 App（通常 0 号）→ fw_init(manifests, count)
                                  ├─ 绑定 g_plat_ops
                                  ├─ 一致性自检（§4.1）
                                  └─ 读 caps 生成运行时能力表
-                            → manager 启动各 App
+                            → fw_boot() 拉起 APP_FLAG_SYSTEM 的 App
 app → cap_available(PLAT_CAP_AUDIO_IN) → bool
 ```
+
+> 能力位（caps）目前**未实现**（§4.2）：`plat_ops_t` 里还没有 `caps` 字段，也没有
+> `plat_caps()`。这段是目标形状，不是现状。
 
 **为什么必须有这一步**：如果只能"调了失败再说"，用户点了语音按钮才发现没有麦克风 —— 这是 UI 灾难。能力必须**在渲染之前**可查。
 

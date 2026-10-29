@@ -30,6 +30,12 @@ SCAN_DIRS = ["common", "api", "lib", "framework", "apps"]
 SOURCE_SUFFIXES = {".c", ".h"}
 DEFAULT_RULES = hostenv.ROOT / "tools" / "purity_rules.txt"
 
+# 注意：这里**不再**检查"普通 App 不得 include framework/ 与 sys/"。
+# 那条规则已经由 tools/check_policy.py 的依赖判定接管——它用 clang -MM 的真实
+# 解析结果，比正则扫 #include 文本可靠（`../`、-I 顺序、#include_next 都能绕过文本）。
+# 同一个约束只留一处实现，否则两处会慢慢不一致，而先失效的那处没人知道。
+
+
 
 def load_rules(path):
     """解析 kind:pattern 规则。格式不对就抛 ValueError，不静默跳过。"""

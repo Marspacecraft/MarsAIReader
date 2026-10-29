@@ -1,4 +1,4 @@
-# MarsAIReader 架构设计（方案阶段 v0.2）
+# MarsAIReader 架构设计（v0.4）
 
 > **定位：本项目是框架，不针对任何具体硬件。**
 >
@@ -7,26 +7,28 @@
 >
 > 状态：仅设计，未实现。屏幕因特殊性**单独讨论**（§9）。
 
-> **语言边界**：本仓库内的 `common/` `api/` `lib/` `framework/` `apps/` 一律是**标准 C11**，与任何目标 SDK、芯片、图形库无关。编译器差异只收敛在 `common/include/cm_port.h`；这条规则由 `tools/check_purity.py` 强制。平台差异由平台包在 `platform/` 里吸收，不向上渗透。
+> **语言边界**：本仓库内的 `common/` `api/` `lib/` `framework/` 一律是**标准 C11**，与任何目标 SDK、芯片、图形库无关（产品仓库的 `apps/` 同样受约束）。编译器差异只收敛在 `common/include/cm_port.h`；这条规则由 `tools/check_purity.py` 强制。平台差异由平台包在 `platform/` 里吸收，不向上渗透。
 
 ---
 
 ## 0. 分层与解耦
 
 ```
+common/              人人可用的基础设施（类型、原子、链表、错误码、TLS）
 api/                 应用层契约面：公共头 + 能力目录（无实现）
-apps/                应用层：AI 唯一的编辑区（不信任域）
-  _sys/0-manager     引导、生命周期、监控、配额、能力汇总
-  _sys/1-display     显示语义、提交合并、刷新策略（不含面板传输）
-  _sys/2-input       按键 / 触摸语义、消抖、手势
-  _sys/3-audio       播放会话、采集共享、BT 音频会话
-  _sys/4-net         连接状态机、重连退避
-  <ai-app>/          AI 写：只调 api/
 framework/           框架层：不能运行的代码（无 task / 无 timer / 无硬件句柄）
-platform/port/       平台层接口要求：plat_ops_t + 全 NOT_SUPPORTED 的默认实现
+platform/port/       平台层接口要求：plat_ops_t + NULL 表示不支持
 skills/              给 AI 的工作流与硬约束
 tests/               host 单测（含 host-fake 平台）
+
+apps/                ← 不在本仓库，由产品仓库提供
+  系统 App          引导、生命周期、监控、配额、能力汇总；服务宿主（display/input/audio/net）
+  业务 App          AI 写：只调 api/
 ```
+
+**`apps/` 为什么不在本仓库**：本仓库只做框架 + 应用层公共逻辑（用户 m01960/m01994）。
+App 实现、0 号策略、各服务 App 都属产品侧；框架只提供机制与清单合并
+（`fw_init(manifests, count)`），不认领任何具体 App。
 
 ### 0.1 解耦规则
 
@@ -61,71 +63,88 @@ App = **一个模块 + 一个主任务 + 一份 manifest**。它不是进程，�
 
 ```c
 typedef struct app_desc {
-    const char *id;
-    cm_err_t (*init)(const app_cfg_t *cfg);   /* 建资源，不启动 */
-    void    (*task_main)(void *ctx);          /* 主任务体，必须可协作退出 */
-    cm_err_t (*deinit)(void *ctx);            /* 释放 */
-    const app_manifest_t *manifest;
+    app_id_t    id;                            /* 1..254，全固件唯一（0 保留） */
+    const char *name;                          /* 给人看的名字：日志、UI */
+    cm_err_t (*init)(app_ctx_t *ctx);          /* 建资源 */
+    void     (*exit)(app_ctx_t *ctx);          /* 所有结束路径都调用恰好一次 */
+    void     (*task)(app_ctx_t *ctx);          /* 主任务体，必须可协作退出 */
+    uint32_t    flags;                         /* APP_FLAG_SYSTEM */
 } app_desc_t;
 ```
+
+> 权威定义是 `api/include/app.h`；完整契约（伪阻塞、退出顺序、已知缺口）见
+> [app-model.md](app-model.md)。本节只保留架构层面的形态。
 
 ### 1.1 主任务的强制形态
 
 ```c
 for (;;) {
-    msg_t m;
-    if (app_wait_msg(id, &m, 100 /* ms */) == ESP_OK) {
-        dispatch(&m);
-    }
-    /* app_wait_msg 是伪阻塞：被取消时不返回这里，直接走退出路径（§3.1.1） */
+    do_work();
+    app_delay(100);   /* 伪阻塞：被取消时不返回这里，直接走退出路径 */
 }
 ```
+
+没有 `app_wait_msg(...) == OK` 这种写法。**App 不检查返回值、不写状态机、不轮询取消位**——
+一旦写了，就等于把"停得下来"这件事从框架的保证降级成作者的自律。
 
 ### 1.2 停止协议（为什么不能强杀）
 
 `vTaskDelete` 一个卡在 `while(1)` 里、还**持着互斥锁**的任务 → 锁永远不还 → 整机从"某 App 卡住"恶化为"全系统死锁"。
 
-1. manager 置取消位（不投递任何"停止消息"，App 不需要处理它）；
-2. 任务在下一个伪阻塞点发现取消位 → 框架回收托管资源 → 调 `on_exit` → 任务自己清取消位并结束（§3.1.1）；
-3. **超时未退** → 标记 `FAILED`，不再向它投递任何消息，记录 coredump，降级运行；
+1. 0 号置状态 `STOPPING` 并置取消位（**不投递"停止消息"**，App 不需要处理它）；
+2. 任务在下一个伪阻塞点发现取消位 → 清零取消位（= 在 exit 期间禁用取消）→ 调 `exit()` → 置终态 → 结束任务；
+3. **超时未退** → 当前只观测并报告（0 号不打日志刷屏，只在状态变化时打一行）；自动重启策略未实现；
 4. 极端情况只能重启整机。
 
 > **能力上限要写进 skill**：这是"有界退化"，不是沙箱，AI 不能假设有内存隔离。
+> 另外"框架回收托管资源"也还没实现（`res_track`），当前 App 必须自己在 `exit()` 里关掉一切。
 
 ### 1.3 状态机
 
 ```
-STOPPED ──start──> STARTING ──init_ok──> RUNNING ──stop──> STOPPING ──exit──> STOPPED
-                      │                     │                    │
-                   init_fail             timeout              timeout
-                      └────────────> FAILED <───────────────────┘
+EMPTY ──start──> INIT ──init成功──> RUNNING ──request_stop──> STOPPING ──> STOPPED
+                   │                    │
+               init失败             task 正常返回（自愿退出）
+                   └──────> FAILED      └──────────────────────────────> STOPPED
+
+STOPPED ──start──> INIT        （可重启：取消位在收尾时已清零）
 ```
 
-### 1.4 manifest
+只有 6 个状态，**没有"暂停"**——单 MCU 上暂停等于"占着资源不干活"。
+
+### 1.4 manifest（部分字段尚未落地）
 
 ```yaml
 # apps/reader/app.yaml
 app:
-  id: reader
-  name: 阅读器
-  stack_bytes: 6144        # 内部 RAM，不能放 PSRAM
-  psram_bytes: 262144      # 启动前预检，超预算直接拒绝启动
-  requires: [display, storage, input]   # 启动依赖（拓扑排序用）
-  services: []             # 对外提供的能力；空 = 叶子 App
+  id: 3                      # 数字，1..254，全固件唯一（与 app_id_t 一致）
+  name: 阅读器                # 人读，日志与 UI 用
+  flags: none                # none | system
+  stack_bytes: 6144          # 设计：内部 RAM，不能放 PSRAM（当前统一 4096，未按 App 配置）
+  psram_bytes: 262144        # 设计：启动前预检，超预算拒绝启动（未实现）
+  requires: [display, storage, input]   # 设计：启动依赖，拓扑排序用（未实现）
+  services: []               # 设计：对外提供的能力（服务注册表已定，见 §3.6）
 ```
 
-`requires` 构成依赖图，manager 按拓扑序启动、逆序停止。
+> 写明"未实现"不是免责，是防止 AI 按设计写代码而在运行时发现字段被忽略。
+> 当前真正生效的只有 `id` / `name` / `flags`；其余三项属里程碑 M2。
+
+`requires` 的用意是让 manager 按拓扑序启动、逆序停止；**这条能力还没实现**，现在 0 号只按 manifest 顺序启动。
 
 ---
 
-## 2. 0 号 App（manager）
+## 2. 0 号 App（manager）—— 属产品仓库
+
+> 本节描述的是**架构角色**，不是本仓库的代码。本仓库不提供 0 号实现（见 §0）。
+> 框架只做两件事：拉起 `APP_FLAG_SYSTEM` 的 App、提供 `fw_app_*` 控制面。
+> 下表里标"未实现"的能力，是框架也还没有支撑（如 `requires` 依赖图）。
 
 | 职责 | 说明 |
 |---|---|
 | 引导 | 唯一在框架初始化前存在的执行体（由 `app_main()` 创建），第一件事是 `fw_init()` |
-| 启动编排 | 读所有 manifest，建依赖图，拓扑排序；缺依赖则拒绝启动并报错 |
-| 配额预检 | 累计 `stack_bytes` / `psram_bytes`，超预算在 `STARTING` 前拒绝 |
-| 能力汇总 | 读 `plat_caps()`，生成运行时能力表，供 App 查询"本机有没有麦克风" |
+| 启动编排 | 读所有清单，决定启动谁、什么顺序；**依赖图/拓扑排序尚未实现**，当前只能按清单顺序 |
+| 配额预检 | 累计 `stack_bytes` / `psram_bytes`，超预算在启动前拒绝；**字段尚未实现** |
+| 能力汇总 | 读能力位，生成运行时能力表，供 App 查询"本机有没有麦克风"；**caps 未实现** |
 | 监控 | 心跳 / 提交超时 / 队列积压；异常先标记 `FAILED`，不直接杀 |
 | 停止 | 协作式（§1.2），逆拓扑序 |
 | 故障隔离 | `FAILED` 的 App 不再收到投递，依赖它的 App 收到明确错误码 |
@@ -157,6 +176,10 @@ int stor_read(int fd, void *buf, size_t n) {
     return r;                                 /* ③ 未取消才正常返回 */
 }
 ```
+
+> 上面代码里的 `app_cancelled()` / `app_run_exit()` 属于**机制面**（`api/include/sys/app_sys.h`），
+> AI 写的 App 看不到它们——它们只出现在框架自己的阻塞点实现里。App 面（`api/app.h`）
+> 只暴露 `app_delay()` 这个"会响应停止的延时"，连"取消"这个词都不出现。
 
 **App 不检查返回值、不写状态机、不轮询。** 它写直线代码。这是对 AI 最友好的形态：取消语义完全藏在框架里，AI 不需要为"随时可能被停"设计任何结构。
 
@@ -339,8 +362,10 @@ void       res_release(res_handle h);
 
 | 门禁 | 检查方式 | 防的是什么 |
 |---|---|---|
-| 路径白名单 | `git diff --name-only` 必须 ⊆ `apps/` | AI 改框架层/平台层 |
-| 解耦检查 | include 图：apps 不含 `platform/*`，platform 不含 `apps/*` `api/*` | 跨层调用 |
+| 写入白名单 | `git diff --name-only` 逐个查 `policy.txt` 的写权限（`check_policy.py --write --as <tag>`） | AI 改框架层/平台层 |
+| 依赖判定 | `clang -MM` 的真实解析结果逐个查读权限 | 越权 include（`../`、`-I`、`#include_next` 都绕不过真实解析） |
+| 符号判定 | `llvm-nm -u` 的未定符号是否出现在该 TU 实际 include 过的头里 | `extern void fw_boot(void);` 这类不 include 就取特权 |
+| 解耦检查 | `check_purity.py`：app 不碰 SDK、platform 不碰业务 | 跨层调用 / 平台耦合 |
 | 例外白名单 | platform 只调 `fw_event_post` / `fw_event_post_isr` | 反向调用扩大化 |
 | 能力目录双向比对 | `api/` 每条能力 ⇔ 某个 service 注册的操作 | 手写文档漂移 → AI 调不存在的接口，**且失败是静默的** |
 | 交付格式固定四行 | `Build` / `Host tests` / `Device tests` / `Unverified` | 把编译成功说成硬件验证成功 |
@@ -348,7 +373,7 @@ void       res_release(res_handle h);
 
 ### 7.2 skill 硬约束
 
-- 只能修改 `apps/`；越界立即停止并报告。
+- 只能修改 `policy.txt` 允许的路径（产品仓库里通常是 `apps/demo/<app>/` 与 `apps/app_manifest.c`）；越界立即停止并报告。
 - 主任务必须事件驱动、有界等待、有协作退出检查点。
 - **禁止** `xSemaphoreCreateBinary` 当锁（无优先级继承）；用 mutex。
 - **禁止**忙等 / 关中断超长；长计算必须让出 CPU。

@@ -13,14 +13,17 @@
 
 ## 当前文档
 
+入口是仓库根目录的 [AGENTS.md](../AGENTS.md)：它决定"什么任务读哪一份"，本文件只登记文档清单与纪律。
+
 | 文档 | 回答什么问题 | 状态 |
 |---|---|---|
-| [architecture.md](architecture.md) | 三层各是什么、如何解耦、接口契约是什么 | v0.2，本轮已按伪阻塞与注册表修订 |
-| [app-model.md](app-model.md) | 一个 App 由什么构成、谁让它跑/停、它凭什么写直线代码 | v0.1，已有可运行实现 |
-| [code-structure.md](code-structure.md) | 代码放哪里、谁可以 include 谁、一个 API 的两个实现家 | v0.3，含落地状态 |
+| [architecture.md](architecture.md) | 三层各是什么、如何解耦、接口契约是什么 | v0.4，§0 已移除 `apps/` 树（由产品仓库提供） |
+| [app-model.md](app-model.md) | 一个 App 由什么构成、谁让它跑/停、它凭什么写直线代码 | v0.4，清单为 `fw_manifest_t` 数组；本仓库不含 App 实现 |
+| [code-structure.md](code-structure.md) | 代码放哪里、谁可以 include 谁、一个 API 的两个实现家 | v0.6，含 `check_policy.py` 三道判定；`apps/` 标为产品仓库 |
 | [platform-port.md](platform-port.md) | 平台实现方必须满足什么、缺能力时如何降级 | v0.2，硬必需 9 项 |
+| [access-control.md](access-control.md) | 谁能读/写哪个目录，凭什么被机器判定 | v0.2，三条判定均已实现（`tools/check_policy.py`） |
+| [../skills/README.md](../skills/README.md) | 有哪些 skill、按什么身份拆、谁能改 | 三种身份：AI 开发者 / 项目开发者 / 硬件平台开发者 |
 | `api-*.md` | 每个能力的接口细节（下一步产出） | 待写 |
-| `skills.md` | 给 AI 的 skill 清单与硬约束 | 待写 |
 
 ## 版本约定
 

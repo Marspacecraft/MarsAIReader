@@ -10,7 +10,12 @@
 #include "cm_types.h"
 #include "cm_atomic.h"
 #include "app.h"
+#include "sys/app_sys.h"
 #include "plat_ops.h"
+
+/* 框架占用 0 号 TLS 槽存 app_ctx_t*。槽位约定写在这里，别的模块用 1..7。
+ * 为什么要在头里而不是 .c 里：多个 TU 都要读这个槽（未来的 res/stor 也会用）。 */
+#define FW_TLS_SLOT_CTX 0u
 
 struct app_ctx {
     const app_desc_t *desc;

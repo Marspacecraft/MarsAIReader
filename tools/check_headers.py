@@ -34,6 +34,7 @@ def main():
         "common/include",
         "api/include",
         "framework/include",
+        "api/include/sys",
     ]
 
     cc = hostenv.find_cc(opts.cc)

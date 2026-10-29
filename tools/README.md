@@ -1,15 +1,63 @@
 # tools/ —— host 门禁
 
-四个脚本，全部用 Python 写。**同一份代码在 Linux / macOS / Windows 上跑**，没有第二份实现。
+六个脚本，全部用 Python 写。**同一份代码在 Linux / macOS / Windows 上跑**，没有第二份实现。
 
 | 脚本 | 命令 | 检查什么 |
 |---|---|---|
 | 单元测试 | `python tools/run_tests.py` | 编译并运行 `tests/sys/test_*.c`，支持单文件 / 单用例 |
 | 头文件自包含 | `python tools/check_headers.py` | 每个头文件能否被单独 `#include` |
-| 纯 C 边界 | `python tools/check_purity.py` | `common/ api/ lib/ framework/ apps/` 是否碰了目标 SDK |
-| 全部门禁 | `python tools/validate.py` | 上面三项一起跑，不中断 |
+| 纯 C 边界 | `python tools/check_purity.py` | `common/ api/ lib/ framework/`（以及产品仓库的 `apps/`）是否碰了目标 SDK |
+| 权限判定 | `python tools/check_policy.py --all --as 2` | `policy.txt` 的三条判定：依赖 / 符号 / 写入 |
+| 策略表自检 | `python tools/policy.py --check` | 表本身是否自洽（tag 重复、写路径重叠…） |
+| 全部门禁 | `python tools/validate.py [--as 2]` | 上面四项一起跑，不中断 |
 
-VS Code 里按 `Ctrl+Shift+B` 走「host: 全部门禁」。四个任务见 [.vscode/tasks.json](../.vscode/tasks.json)。
+`tools/policy.py` 提供 `Policy` 类（`role_of` / `can_read` / `can_write` / `check`），
+`check_policy.py` 复用它。`tools/hostenv.py` 是共用件：编译器探测、`INCLUDE_DIRS`（**唯一来源**）、
+`run_capture()`（沙箱里不能用管道，见 §6）。
+
+VS Code 里按 `Ctrl+Shift+B` 走「host: 全部门禁」。任务见 [.vscode/tasks.json](../.vscode/tasks.json)。
+
+## 1. 三条权限判定怎么判
+
+规格在 [docs/access-control.md](../docs/access-control.md)，这里只记"为什么这么实现"。
+
+| 判定 | 手段 | 为什么不是更简单的做法 |
+|---|---|---|
+| 依赖 | `clang -MM` 的真实解析结果 | 正则扫 `#include` 会被 `../`、`-I` 顺序、`#include_next`、`__has_include` 绕过 |
+| 符号 | `llvm-nm -u` + "该符号是否出现在实际 include 过的头里" | 按"符号定义在哪个目录"判，会把"`api/` 声明、`framework/` 实现"的正常调用全判成违规 |
+| 写入 | `git diff` 三路合并（工作区 / 暂存 / 未跟踪）的路径前缀 | 只能靠路径；内容级约束（注册表"只能追加"）还没做 |
+
+身份必须显式给：`--as <tag|human>`。不给时写入判定打印 `SKIP` **且不计违规**——
+理由是本地跑全量门禁不该被"我没声明身份"卡住，但 CI 里必须给，否则等于没判。
+
+> **已知缺口**：CI 当前跑的是 `python tools/validate.py --cc <编译器>`，没有 `--as`，
+> 所以写入判定在 CI 里是 `SKIP`，只有依赖与符号判定在拦。
+> 要在 CI 里真正判写入，得先有"这次改动是谁提交的"这个事实来源（PR 标签 / commit trailer / 环境变量），
+> 否则只能写死一个身份，那还不如不判。
+
+三条都是真的能红的，复现记录：
+
+```sh
+# 符号：在一个 tag 2 的 .c 里写 extern void fw_boot(void); 并调用
+# （本仓库没有 apps/，这条是在产品仓库里复现的；本仓库内可临时建一个
+#   仅含该文件的探针目录并临时把它加进 policy.txt 的 tag 2，验完删除）
+python tools/check_policy.py --symbols
+# SYM  apps/demo/hello/_probe_sym.c (tag 2) 用了 fw_boot，但没有任何实际 include 的头声明它
+# FAIL: 权限违规 1 处            rc=1
+
+# 写入：以 AI 身份跑全量门禁（会碰到框架与文档）
+python tools/validate.py --as 2
+# WRITE  framework/src/fw_app.c  不在 tag 2 (aiapp) 的写权限内
+# FAIL: 权限判定未通过           rc=1
+
+# 写入：人
+python tools/validate.py --as human
+# 身份: human（人）。放行 N 个变更文件，但请确认这份改动确实该由人提交。
+```
+
+符号判定的一个已知边界：它只看**全局未定义符号**，静态函数、宏、内联函数都看不见。
+用宏拼出符号名（`extern void CONCAT(fw_,x)(void);`）能绕过——但那种代码在 review 里看不出来吗？
+能，而且它必须 include 过某个头才可能有原型。这条判定拦的是"顺手 extern 一下"，不是"蓄意逃逸"。
 
 ## 为什么最后只剩 Python
 
@@ -47,8 +95,9 @@ Windows PowerShell 5.1 读**无 BOM** 的 `.ps1` 时按系统 ANSI 代码页解�
 ## CI（[.github/workflows/ci.yml](../.github/workflows/ci.yml)）
 
 CI 里跑的就是 `python tools/validate.py --cc <编译器>`，和本地 `Ctrl+Shift+B` 同一条命令，
-矩阵是 `{linux gcc, linux clang, macos clang, windows clang}`。三个平台都上，是因为这四个脚本的
-价值就在"一份实现、三家语义一致"——只在一个平台跑，这句话没人验证。
+默认矩阵是 `{linux gcc, linux clang, windows clang}`；macOS 单列一个手动 workflow。
+多平台都上，是因为这些脚本的价值就在"一份实现、各家语义一致"——只在一个平台跑，这句话没人验证。
+macOS 被拆出去的理由（排队、计费、它把整个 run 钉在 queued）见 [.github/README.md](../.github/README.md)。
 
 **加门禁只改 `validate.py` 的 `STEPS`，CI 自动跟上。** 在 workflow 里再列一遍脚本名就是第二份清单。
 取舍与限制见 [.github/README.md](../.github/README.md)。

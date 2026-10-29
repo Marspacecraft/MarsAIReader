@@ -3,26 +3,28 @@
  *
  * 这里只有两件事：把 App 放进一个任务，以及任务结束时怎么干净地退出。
  *
- * 线程局部存储（s_cur）是伪阻塞的关键：
+ * "我是哪个 App"放在 common 的任务局部变量里（cm_tls，0 号槽）：
  *   任意深度的阻塞接口（app_delay / 将来的 stor_read / disp_commit）都能拿到
- *   "我是哪个 App"，不需要把 ctx 一路透传。代价是"非 App 任务里这些接口不可用"，
+ *   ctx，不需要把 ctx 一路透传。代价是"非 App 任务里这些接口不可用"，
  *   而那本来就该被禁止。
+ *
+ * 为什么用 cm_tls 而不是文件内 static _Thread_local：
+ *   服务型 App（如 display）也需要回答"当前是哪个 App 在调我"，那属于 api/ 实现，
+ *   在别的 TU 里；把这块状态放在 common 才能被双方读到而不用互相 include。
  */
 #include "fw_internal.h"
-#include "plat_ops.h"
 
-/* C11 标准线程局部存储。只在执行单元有独立栈的平台上成立（FreeRTOS 任务 / pthread
- * 都成立）。unsupported 的编译器在 cm_port.h 就被拦掉了，所以这里不用做降级。 */
-static _Thread_local app_ctx_t *s_cur;
+#include "cm_tls.h"
+#include "plat_ops.h"
 
 app_ctx_t *fw_current_ctx(void)
 {
-    return s_cur;
+    return (app_ctx_t *)cm_tls_get(FW_TLS_SLOT_CTX);
 }
 
 void fw_ctx_set_current(app_ctx_t *ctx)
 {
-    s_cur = ctx;
+    cm_tls_set(FW_TLS_SLOT_CTX, ctx);
 }
 
 static void fw_task_entry(void *arg)
@@ -34,7 +36,7 @@ static void fw_task_entry(void *arg)
     if (ctx->desc->init) {
         cm_err_t r = ctx->desc->init(ctx);
         if (r != CM_OK) {
-            app_logp(ctx->desc->id, "init 失败: %s", cm_err_str(r));
+            app_logp(ctx->desc->name, "init 失败: %s", cm_err_str(r));
             fw_ctx_finish(ctx, APP_STATE_FAILED);
         }
     }
@@ -62,5 +64,7 @@ cm_err_t fw_task_spawn(app_ctx_t *ctx)
     if (p->task_create == NULL) {
         return CM_ERR_NOT_SUPPORTED;
     }
-    return p->task_create(ctx->desc->id, fw_task_entry, ctx, FW_APP_STACK_DEFAULT);
+    /* 任务名用 name 不用 id：调试器/RTOS 任务列表里看到的是人读的名字。
+     * id 是给程序和位图用的，不该出现在这里。 */
+    return p->task_create(ctx->desc->name, fw_task_entry, ctx, FW_APP_STACK_DEFAULT);
 }
