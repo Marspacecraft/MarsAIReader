@@ -211,13 +211,20 @@ app → cap_available(PLAT_CAP_AUDIO_IN) → bool
 
 ## 8. 参考平台：host-fake
 
-框架仓库自带 `tests/host-fake/`，实现 `g_plat_ops`：
+框架仓库自带 `platform/host-fake/`，实现 `g_plat_ops`：
 
 - 硬必需项：真的用 `malloc` / 单调时钟 / `pthread` mutex；
 - 可选能力：默认全部缺失（正好用来测"能力不存在时 App 是否优雅降级"）；
 - 可按测试需要打开某一项，验证"有这项能力时"的路径。
 
 这使**框架层与应用层的公共逻辑都能在 PC 上测**，不必烧板子。
+
+> **它必须自己声明 POSIX 版本。** 门禁用 `-std=c11`（严格 ISO），glibc 见到
+> `__STRICT_ANSI__` 就不定义 `_DEFAULT_SOURCE`，`clock_gettime` / `nanosleep` /
+> `pthread_mutex_timedlock` 因此没有声明，Linux 上直接编译失败（Windows 走 `_WIN32`
+> 分支看不见这个坑，只在 CI 暴露）。修法是在该 TU 的任何 `#include` 之前
+> `#define _POSIX_C_SOURCE 200809L`，**不要**为了它放宽全局 CFLAGS——
+> 纯 C 边界管的是 `common` / `api` / `framework` / `apps`，host-fake 不在其中。
 
 ---
 

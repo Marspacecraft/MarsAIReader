@@ -7,6 +7,21 @@
  *
  * 可选能力全部留空（NULL）：上层的降级路径因此每次 host 测试都会被走到。
  */
+
+/*
+ * 必须在任何 #include 之前。
+ *
+ * 门禁用 -std=c11（严格 ISO），glibc 见到 __STRICT_ANSI__ 就不定义 _DEFAULT_SOURCE，
+ * 于是 POSIX 的 clock_gettime / nanosleep / pthread_mutex_timedlock 全部没有声明，
+ * 编译直接失败。Windows 走 _WIN32 分支看不到这个坑，所以它只在 CI 上暴露。
+ *
+ * 只在这一个 TU 里要 POSIX，不放宽全局 CFLAGS：纯 C 边界（tools/check_purity.py）
+ * 管的是 common / api / framework / apps，host-fake 是主机参考实现，不在其中。
+ */
+#if !defined(_WIN32)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "plat_ops.h"
 
 #include <stdio.h>

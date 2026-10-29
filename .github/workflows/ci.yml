@@ -68,11 +68,11 @@ jobs:
       PYTHONUTF8: "1"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 门禁只用标准库。固定版本只为可复现：哪天脚本用到更新的标准库，
       # 会在这里明确暴露，而不是等它在别人机器上出错。
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -84,16 +84,31 @@ jobs:
       - name: host 门禁
         run: |
           set +e
-          python tools/validate.py --cc "${{ matrix.cc }}"
-          rc=$?
+          python tools/validate.py --cc "${{ matrix.cc }}" 2>&1 | tee "$RUNNER_TEMP/gate.log"
+          rc=${PIPESTATUS[0]}
           set -e
 
           # 退出码 0/1/2 的语义见 tools/README.md：1 是"代码有问题"，2 是"环境有问题"。
           # CI 里两者都必须失败，但要在 UI 上说清是哪一种 ——
           # 把环境问题显示成"代码全错"，是最浪费时间的失败。
+          if [ "$rc" -eq 0 ]; then
+            echo "PASS: 全部 host 门禁通过"
+            exit 0
+          fi
+
           case "$rc" in
-            0) echo "PASS: 全部 host 门禁通过" ;;
-            1) echo "::error title=门禁判定代码违规（退出码 1）::修代码；若日志是 Python traceback，则是脚本自身故障，不是代码问题" ; exit 1 ;;
-            2) echo "::error title=门禁无法执行（退出码 2）::修 CI 环境，不要改代码" ; exit 1 ;;
-            *) echo "::error title=意外退出码 $rc::tools/validate.py 崩溃或返回了未约定的退出码" ; exit 1 ;;
+            1) echo "::error title=门禁判定代码违规（退出码 1）::修代码；若日志是 Python traceback，则是脚本自身故障，不是代码问题" ;;
+            2) echo "::error title=门禁无法执行（退出码 2）::修 CI 环境，不要改代码" ;;
+            *) echo "::error title=意外退出码 $rc::tools/validate.py 崩溃或返回了未约定的退出码" ;;
           esac
+
+          # 失败时把关键行提升成注解。
+          # 为什么：完整日志要登录才能下载，注解是公开可读的，也会直接显示在 PR 界面上。
+          # 每个 job 最多 10 条注解，所以只取前 10 条；tr -d '\r' 是防 CRLF 带进注解。
+          grep -nE '^(FAIL|ERROR)|error\[|error:|错误|违规' "$RUNNER_TEMP/gate.log" \
+            | head -n 10 \
+            | while IFS= read -r line; do
+                echo "::error::$(printf '%s' "$line" | tr -d '\r')"
+              done
+
+          exit 1

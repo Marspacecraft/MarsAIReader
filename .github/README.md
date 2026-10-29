@@ -68,3 +68,22 @@ python tools/validate.py --cc "C:/Program Files/LLVM/bin/clang.exe"   # Windows
 
 - 工作流里 `macos / apple clang`、`linux / gcc`、`linux / clang` 三格**没有在本机验证过**（本机只有 Windows + LLVM clang）。首次推送运行时，它们才是第一次真正执行；若报出 GCC 独有的 `-Werror` 判定，那是门禁在正常工作，应改代码或改门禁规则，而不是关掉该格。
 - 没有覆盖 `platform/` 与固件侧：这两块的门禁属于 §4 表格里"构建固件"那一行，尚未开始。
+
+## 7. 失败了先看哪里
+
+**先看注解，不要先要日志。** 完整日志要登录才能下载，注解是公开可读的。所以
+`host 门禁` 这一步在失败时会把 `FAIL` / `ERROR` / `error:` / `错误` / `违规` 的前 10 行
+提升成 `::error::` 注解（每 job 上限 10 条），在 Actions 页面和 PR 界面上直接可见。
+
+三条判读规则：
+
+| 注解标题 | 含义 | 该改什么 |
+|---|---|---|
+| 门禁判定代码违规（退出码 1） | 有测试/头文件/纯 C 边界没通过 | 改代码；**若日志是 Python traceback，则是脚本自身故障** |
+| 门禁无法执行（退出码 2） | 环境问题：没有编译器、找不到测试 | 改 CI 环境，不要改代码 |
+| 意外退出码 N | `validate.py` 崩溃或返回了未约定的码 | 先看是不是脚本 bug |
+
+第一次真实运行（#1）暴露的就是这一类：`linux / gcc` 与 `linux / clang` 均以退出码 1
+失败，`windows / llvm clang` 通过 —— 平台差异，不是编译器差异。根因是
+`platform/host-fake/plat_host.c` 在 `-std=c11` 下拿不到 POSIX 声明（详见
+[platform-port.md §8](../docs/platform-port.md)）。
