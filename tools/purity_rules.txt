@@ -1,0 +1,16 @@
+# 纯 C 边界的禁止模式（唯一消费方：tools/check_purity.py）
+#
+# 格式：kind:正则
+#   kind 只是给人看的分类，脚本只用它输出标签
+#   正则后的第一个 ":" 之后全部属于正则，正则里不得出现 ":"
+#
+# 为什么规则要放在单独的文件里：
+#   它是"这道门禁到底在防什么"的唯一说明书。写在脚本里会被循环与路径处理淹没，
+#   写成数据就便于逐条 review；改规则也不必动代码。
+#
+# 正则是 Python re 语法（门禁只有一份 Python 实现）。注意：
+#   需要"任意空白"时用 .* 或空格本身；# 开头的行是注释。
+#
+include:#include.*[<"](esp_[a-z0-9_]*|freertos/|driver/|soc/|hal/|sdkconfig|nvs[a-z0-9_]*|esp_lcd[a-z0-9_]*|lvgl[a-z0-9_]*|Arduino)
+ident:(^|[^A-Za-z0-9_])(esp_err_t|ESP_PLATFORM|CONFIG_IDF_TARGET[A-Z0-9_]*|__XTENSA__|__riscv|xTaskCreate[A-Za-z]*|vTaskDelay[A-Za-z]*|vTaskDelete|xQueueCreate[A-Za-z]*|xSemaphore[A-Za-z]*|portMAX_DELAY|portTICK_PERIOD_MS|IRAM_ATTR|lvgl_[a-z0-9_]*|lv_[a-z][a-z0-9_]*)([^A-Za-z0-9_]|$)
+cross:#include.*[<"]platform/

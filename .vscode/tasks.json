@@ -1,0 +1,50 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      // 单元测试：不依赖 ESP-IDF，只用 cc/gcc/clang。
+      // 想只跑某个用例时用命令行：python tools/run_tests.py test_common list_ops
+      "label": "host: 单元测试",
+      "type": "shell",
+      "command": "python",
+      "args": ["tools/run_tests.py"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+    },
+    {
+      // 头文件自包含：单独 include 某个头也必须能编译
+      "label": "host: 头文件自包含检查",
+      "type": "shell",
+      "command": "python",
+      "args": ["tools/check_headers.py"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "test",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+    },
+    {
+      // 纯 C 边界：common/api/lib/framework/apps 不得碰目标 SDK
+      "label": "host: 纯 C 边界检查",
+      "type": "shell",
+      "command": "python",
+      "args": ["tools/check_purity.py"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "test",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+    },
+    {
+      // 一次跑完所有门禁。加新门禁时只改 tools/validate.py，不用动这里
+      "label": "host: 全部门禁",
+      "type": "shell",
+      "command": "python",
+      "args": ["tools/validate.py"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+    }
+  ]
+}

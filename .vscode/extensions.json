@@ -1,0 +1,16 @@
+{
+  // 只推荐"读代码需要"的最小集合，不塞一堆格式化/主题类扩展。
+  "recommendations": [
+    // C/C++ 语法与跳转。若你改用 clangd，请禁用本扩展再启用第 2 项，
+    // 两者同时开启会出现重复补全与两套诊断。
+    "ms-vscode.cpptools",
+    // 备选语言服务（更准的跳转/索引，需自行生成 compile_commands.json）
+    "llvm-vs-code-extensions.vscode-clangd",
+    // shell 脚本静态检查：tests/ 与 tools/ 下的脚本会越来越多
+    "timonwong.shellcheck",
+    // 统一换行与缩进风格，避免 CRLF/LF 混提交
+    "editorconfig.editorconfig"
+  ],
+  // 明确不推荐：会把 .c 当 C++ 解析、或自动改写文件内容的扩展
+  "unwantedRecommendations": []
+}

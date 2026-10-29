@@ -1,0 +1,57 @@
+{
+  // ============================================================
+  // 默认策略：本工作区所有文件在编辑器里只读，不能改。
+  //
+  // 依赖 VS Code >= 1.79 的两个设置：
+  //   files.readonlyInclude / files.readonlyExclude
+  // 验证方法：设置里搜 "readonly"，能看到 "Files: Readonly Include"
+  // 就说明生效；看不到说明版本太旧（见文件末尾的降级方案）。
+  //
+  // 注意：这只管编辑器里的编辑行为。终端、git、外部 CLI 工具
+  // 不受影响 —— 那是另一层的事（文件系统只读位 / 门禁脚本）。
+  // ============================================================
+
+  // 全部只读
+  "files.readonlyInclude": {
+    "**/*": true
+  },
+
+  // 唯一的例外：本文件自身。
+  // 否则连"放开某个目录要改哪里"都做不到 —— 会把自己锁死。
+  "files.readonlyExclude": {
+    "**/.vscode/settings.json": true
+  },
+
+  // 同时尊重文件系统只读位（Windows: attrib +R / POSIX: chmod -w）
+  // 让"OS 层面标记为只读"的文件在编辑器里也确实是只读
+  "files.readonlyFromPermissions": true,
+
+  // 配套：关闭自动保存。
+  // 只读 + 自动保存会让"改了但没保存"和"根本没改成"难以区分，
+  // 关掉它可以让"文件内容有没有变"这件事只有一个来源。
+  "files.autoSave": "off",
+
+  // host 测试的产物不显示在资源管理器里，避免和源码混淆
+  "files.exclude": {
+    "build/host": true
+  },
+
+  // 本仓库禁止产生隐式格式化写入：格式化只在你显式执行时发生
+  "editor.formatOnSave": false,
+  "editor.formatOnPaste": false,
+
+  // ============================================================
+  // 怎么临时改一个文件？
+  //   1) 长期放开：把它加到上面的 files.readonlyExclude
+  //      （例如 "api/**": true —— 再加一层否定是可以的）
+  //   2) 只放开这一次：右键标签页 → "Toggle Read-only"，
+  //      或命令面板 "File: Toggle Active Editor Read-only in Session"
+  //
+  // 旧版 VS Code 的降级方案（没有 readonlyInclude 时）：
+  //   只保留 "files.readonlyFromPermissions": true，
+  //   然后用命令给文件打 OS 只读位：
+  //     Windows : attrib +R api\*.h framework\*.c
+  //     Git Bash: chmod -w api/*.h
+  //   取消：attrib -R / chmod +w
+  // ============================================================
+}

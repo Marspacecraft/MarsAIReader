@@ -1,0 +1,99 @@
+# 自动 CI：跑的就是 tools/validate.py 这一条命令。
+#
+# 与本地 Ctrl+Shift+B「host: 全部门禁」完全同一条命令，这是刻意的：
+# 两边各写一份步骤就会慢慢漂移，然后出现"本地过了、CI 挂了"。
+# 新门禁只加进 tools/validate.py，CI 自动跟上，不需要动本文件。
+#
+# 为什么要三个 OS：tools/ 四个脚本的全部价值就是"一份实现、三家语义一致"
+# （tools/README.md 里否决 .sh + .ps1 双份实现的就是这个理由）。
+# 只在一个平台跑，这份声明就没有人验证。
+#
+# 为什么 Windows 上只有 clang：
+#   - windows-latest 预装 LLVM clang（C:\Program Files\LLVM\bin）；
+#   - msys2 的 gcc 不是预装的，要另加一步安装；
+#   - MSVC 的 cl 不接受 -std=c11 / -Wextra / -fsyntax-only 这套参数，本项目门禁不支持它。
+#   - macOS 上的 gcc 是 clang 的别名，跑它等于把同一件事记两遍，所以不跑。
+#   要补 Windows gcc：加一步 msys2/setup-msys2，再把 cc 指到 ucrt64/bin/gcc.exe。
+
+name: host gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 只读 token：门禁只签出代码、只读文件，不需要写仓库。
+permissions:
+  contents: read
+
+# 同一分支连续推送时取消上一轮，省 runner 也省等待。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-gates:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+
+    # fail-fast: false —— 一格失败时其它格的结果仍然要看。
+    # "只有 gcc 报错、clang 不报"本身就是信息（编译器差异），不能因为先失败就丢掉。
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux / gcc
+            os: ubuntu-latest
+            cc: gcc
+          - name: linux / clang
+            os: ubuntu-latest
+            cc: clang
+          - name: macos / apple clang
+            os: macos-latest
+            cc: clang
+          - name: windows / llvm clang
+            os: windows-latest
+            cc: "C:/Program Files/LLVM/bin/clang.exe"
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      # Windows runner 的控制台代码页不是 UTF-8，而门禁脚本的输出是中文：
+      # 不设这个，CI 会以 UnicodeEncodeError 失败在"打印一行中文"上。
+      # 这是修环境，不是改脚本 —— 三个平台仍然共用同一份 Python，不做平台分支。
+      PYTHONUTF8: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 门禁只用标准库。固定版本只为可复现：哪天脚本用到更新的标准库，
+      # 会在这里明确暴露，而不是等它在别人机器上出错。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 记录工具链身份
+        run: |
+          python -VV
+          "${{ matrix.cc }}" --version | head -n 2
+
+      - name: host 门禁
+        run: |
+          set +e
+          python tools/validate.py --cc "${{ matrix.cc }}"
+          rc=$?
+          set -e
+
+          # 退出码 0/1/2 的语义见 tools/README.md：1 是"代码有问题"，2 是"环境有问题"。
+          # CI 里两者都必须失败，但要在 UI 上说清是哪一种 ——
+          # 把环境问题显示成"代码全错"，是最浪费时间的失败。
+          case "$rc" in
+            0) echo "PASS: 全部 host 门禁通过" ;;
+            1) echo "::error title=门禁判定代码违规（退出码 1）::修代码；若日志是 Python traceback，则是脚本自身故障，不是代码问题" ; exit 1 ;;
+            2) echo "::error title=门禁无法执行（退出码 2）::修 CI 环境，不要改代码" ; exit 1 ;;
+            *) echo "::error title=意外退出码 $rc::tools/validate.py 崩溃或返回了未约定的退出码" ; exit 1 ;;
+          esac
