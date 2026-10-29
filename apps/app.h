@@ -47,7 +47,7 @@ typedef struct app_ctx app_ctx_t;
 
 typedef struct app_desc {
     app_id_t id;      /* 机器标识，见上面的分配规则 */
-    const char *name; /* 给人看的名字（日志、UI）。长度由作者决定，不参与比较 */
+    cm_string name; /* 给人看的名字（日志、UI）。长度由作者决定，不参与比较 */
 
     /* 在 App 自己的任务里执行。返回非 OK 则 App 进入 FAILED，不再启动。 */
     cm_err_t (*init)(app_ctx_t *ctx);

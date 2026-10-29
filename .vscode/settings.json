@@ -13,7 +13,7 @@
 
   // 全部只读
   "files.readonlyInclude": {
-    "**/*": true
+  //  "**/*": true
   },
 
   // 唯一的例外：本文件自身。

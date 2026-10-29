@@ -28,6 +28,7 @@ typedef int64_t  cm_i64;
 typedef size_t   cm_size;
 typedef ptrdiff_t cm_ssize;
 typedef uintptr_t cm_uintptr;
+typedef const char * cm_string;
 
 /* ---------------- 常用宏 ---------------- */
 
